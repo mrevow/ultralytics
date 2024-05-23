@@ -654,7 +654,10 @@ class Model(nn.Module):
 
         self.trainer = (trainer or self._smart_load("trainer"))(overrides=args, _callbacks=self.callbacks)
         if not args.get("resume"):  # manually set model only if not resuming
-            self.trainer.model = self.trainer.get_model(weights=self.model if self.ckpt else None, cfg=self.model.yaml)
+            if kwargs.get('model', None) is None or isinstance(kwargs['model'], str):
+                self.trainer.model = self.trainer.get_model(weights=self.model if self.ckpt else None, cfg=self.model.yaml)
+            else:
+                self.trainer.model = kwargs['model']
             self.model = self.trainer.model
 
             if SETTINGS["hub"] is True and not self.session:

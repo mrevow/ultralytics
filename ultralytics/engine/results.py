@@ -94,7 +94,7 @@ class Results(SimpleClass):
         tojson(normalize=False): Converts detection results to JSON format.
     """
 
-    def __init__(self, orig_img, path, names, boxes=None, masks=None, probs=None, keypoints=None, obb=None) -> None:
+    def __init__(self, orig_img, path='', names=[], boxes=None, masks=None, probs=None, keypoints=None, obb=None) -> None:
         """
         Initialize the Results class.
 

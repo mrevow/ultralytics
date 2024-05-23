@@ -442,7 +442,6 @@ class AutoBackend(nn.Module):
         Returns:
             (tuple): Tuple containing the raw output tensor, and processed output for visualization (if visualize=True)
         """
-        b, ch, h, w = im.shape  # batch, channel, height, width
         if self.fp16 and im.dtype != torch.float16:
             im = im.half()  # to FP16
         if self.nhwc:
@@ -515,6 +514,7 @@ class AutoBackend(nn.Module):
 
         # CoreML
         elif self.coreml:
+            b, ch, h, w = im.shape  # batch, channel, height, width
             im = im[0].cpu().numpy()
             im_pil = Image.fromarray((im * 255).astype("uint8"))
             # im = im.resize((192, 320), Image.BILINEAR)
@@ -556,6 +556,7 @@ class AutoBackend(nn.Module):
 
         # TensorFlow (SavedModel, GraphDef, Lite, Edge TPU)
         else:
+            b, ch, h, w = im.shape  # batch, channel, height, width
             im = im.cpu().numpy()
             if self.saved_model:  # SavedModel
                 y = self.model(im, training=False) if self.keras else self.model(im)

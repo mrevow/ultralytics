@@ -1,6 +1,7 @@
 # Ultralytics YOLO 🚀, AGPL-3.0 license
 
 import math
+import torch
 import random
 from copy import copy
 
@@ -11,7 +12,7 @@ from ultralytics.data import build_dataloader, build_yolo_dataset
 from ultralytics.engine.trainer import BaseTrainer
 from ultralytics.models import yolo
 from ultralytics.nn.tasks import DetectionModel
-from ultralytics.utils import LOGGER, RANK
+from ultralytics.utils import RANK
 from ultralytics.utils.plotting import plot_images, plot_labels, plot_results
 from ultralytics.utils.torch_utils import de_parallel, torch_distributed_zero_first
 
@@ -43,34 +44,41 @@ class DetectionTrainer(BaseTrainer):
         return build_yolo_dataset(self.args, img_path, batch, self.data, mode=mode, rect=mode == "val", stride=gs)
 
     def get_dataloader(self, dataset_path, batch_size=16, rank=0, mode="train"):
-        """Construct and return dataloader."""
+        """
+        Construct and return dataloader.
+        dataset_path - Can either be a path to build a dataset or a a dataset instance
+        """
         assert mode in {"train", "val"}, f"Mode must be 'train' or 'val', not {mode}."
-        with torch_distributed_zero_first(rank):  # init dataset *.cache only once if DDP
-            dataset = self.build_dataset(dataset_path, mode, batch_size)
+        if isinstance(dataset_path, torch.utils.data.Dataset):
+            dataset = dataset_path
+        else:
+            with torch_distributed_zero_first(rank):  # init dataset *.cache only once if DDP
+                dataset = self.build_dataset(dataset_path, mode, batch_size)
         shuffle = mode == "train"
         if getattr(dataset, "rect", False) and shuffle:
-            LOGGER.warning("WARNING ⚠️ 'rect=True' is incompatible with DataLoader shuffle, setting shuffle=False")
+            self.LOGGER.warning("WARNING ⚠️ 'rect=True' is incompatible with DataLoader shuffle, setting shuffle=False")
             shuffle = False
         workers = self.args.workers if mode == "train" else self.args.workers * 2
         return build_dataloader(dataset, batch_size, workers, shuffle, rank)  # return dataloader
 
     def preprocess_batch(self, batch):
         """Preprocesses a batch of images by scaling and converting to float."""
-        batch["img"] = batch["img"].to(self.device, non_blocking=True).float() / 255
-        if self.args.multi_scale:
-            imgs = batch["img"]
-            sz = (
-                random.randrange(self.args.imgsz * 0.5, self.args.imgsz * 1.5 + self.stride)
-                // self.stride
-                * self.stride
-            )  # size
-            sf = sz / max(imgs.shape[2:])  # scale factor
-            if sf != 1:
-                ns = [
-                    math.ceil(x * sf / self.stride) * self.stride for x in imgs.shape[2:]
-                ]  # new shape (stretched to gs-multiple)
-                imgs = nn.functional.interpolate(imgs, size=ns, mode="bilinear", align_corners=False)
-            batch["img"] = imgs
+        if isinstance(batch["img"], torch.Tensor):
+            batch["img"] = batch["img"].to(self.device, non_blocking=True).float() / 255
+            if self.args.multi_scale:
+                imgs = batch["img"]
+                sz = (
+                    random.randrange(self.args.imgsz * 0.5, self.args.imgsz * 1.5 + self.stride)
+                    // self.stride
+                    * self.stride
+                )  # size
+                sf = sz / max(imgs.shape[2:])  # scale factor
+                if sf != 1:
+                    ns = [
+                        math.ceil(x * sf / self.stride) * self.stride for x in imgs.shape[2:]
+                    ]  # new shape (stretched to gs-multiple)
+                    imgs = nn.functional.interpolate(imgs, size=ns, mode="bilinear", align_corners=False)
+                batch["img"] = imgs
         return batch
 
     def set_model_attributes(self):
@@ -94,7 +102,7 @@ class DetectionTrainer(BaseTrainer):
         """Returns a DetectionValidator for YOLO model validation."""
         self.loss_names = "box_loss", "cls_loss", "dfl_loss"
         return yolo.detect.DetectionValidator(
-            self.test_loader, save_dir=self.save_dir, args=copy(self.args), _callbacks=self.callbacks
+            self.test_loader, save_dir=self.save_dir, args=copy(self.args), _callbacks=self.callbacks, _logger=self.LOGGER,
         )
 
     def label_loss_items(self, loss_items=None, prefix="train"):
@@ -112,9 +120,10 @@ class DetectionTrainer(BaseTrainer):
 
     def progress_string(self):
         """Returns a formatted string of training progress with epoch, GPU memory, loss, instances and size."""
-        return ("\n" + "%11s" * (4 + len(self.loss_names))) % (
+        # return ("\n" + "%11s" * (4 + len(self.loss_names))) % (
+        return ("%11s" * (4 + len(self.loss_names))) % (
             "Epoch",
-            "GPU_mem",
+            "Iter",
             *self.loss_names,
             "Instances",
             "Size",
@@ -138,6 +147,7 @@ class DetectionTrainer(BaseTrainer):
 
     def plot_training_labels(self):
         """Create a labeled training plot of the YOLO model."""
-        boxes = np.concatenate([lb["bboxes"] for lb in self.train_loader.dataset.labels], 0)
-        cls = np.concatenate([lb["cls"] for lb in self.train_loader.dataset.labels], 0)
-        plot_labels(boxes, cls.squeeze(), names=self.data["names"], save_dir=self.save_dir, on_plot=self.on_plot)
+        if len(self.train_loader.dataset.labels) > 0:
+            boxes = np.concatenate([lb["bboxes"] for lb in self.train_loader.dataset.labels], 0)
+            cls = np.concatenate([lb["cls"] for lb in self.train_loader.dataset.labels], 0)
+            plot_labels(boxes, cls.squeeze(), names=self.data["names"], save_dir=self.save_dir, on_plot=self.on_plot)

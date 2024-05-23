@@ -74,7 +74,8 @@ except ImportError:
 class BaseModel(nn.Module):
     """The BaseModel class serves as a base class for all the models in the Ultralytics YOLO family."""
 
-    def forward(self, x, *args, **kwargs):
+    # def forward(self, x, *args, **kwargs):
+    def forward(self, x,):
         """
         Forward pass of the model on a single scale. Wrapper for `_forward_once` method.
 
@@ -85,10 +86,12 @@ class BaseModel(nn.Module):
             (torch.Tensor): The output of the network.
         """
         if isinstance(x, dict):  # for cases of training and validating while training.
-            return self.loss(x, *args, **kwargs)
-        return self.predict(x, *args, **kwargs)
+            return self.loss(x, )
+            # return self.loss(x, *args, **kwargs)
+        return self.predict(x, )
+        # return self.predict(x, *args, **kwargs)
 
-    def predict(self, x, profile=False, visualize=False, augment=False, embed=None):
+    def predict(self, x, profile=False, visualize=False, augment=False, embed=None, mods=None):
         """
         Perform a forward pass through the network.
 
@@ -104,9 +107,9 @@ class BaseModel(nn.Module):
         """
         if augment:
             return self._predict_augment(x)
-        return self._predict_once(x, profile, visualize, embed)
+        return self._predict_once(x, profile, visualize, embed, mods)
 
-    def _predict_once(self, x, profile=False, visualize=False, embed=None):
+    def _predict_once(self, x, profile=False, visualize=False, embed=None, mods=None):
         """
         Perform a forward pass through the network.
 
@@ -119,21 +122,36 @@ class BaseModel(nn.Module):
         Returns:
             (torch.Tensor): The last output of the model.
         """
-        y, dt, embeddings = [], [], []  # outputs
-        for m in self.model:
-            if m.f != -1:  # if not from previous layer
-                x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
-            if profile:
-                self._profile_one_layer(m, x, dt)
-            x = m(x)  # run
-            y.append(x if m.i in self.save else None)  # save output
-            if visualize:
-                feature_visualization(x, m.type, m.i, save_dir=visualize)
-            if embed and m.i in embed:
-                embeddings.append(nn.functional.adaptive_avg_pool2d(x, (1, 1)).squeeze(-1).squeeze(-1))  # flatten
-                if m.i == max(embed):
-                    return torch.unbind(torch.cat(embeddings, 1), dim=0)
-        return x
+        
+        if isinstance(self.model, torch.nn.modules.container.Sequential):
+            y, dt, embeddings, modules = [], [], [], []  # outputs
+            return_dict = {}
+            has_returnlist = hasattr(self, "return_outputs")
+            for m in self.model:
+                if m.f != -1:  # if not from previous layer
+                    x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
+                if profile:
+                    self._profile_one_layer(m, x, dt)
+
+                if mods and m.i in mods:
+                    modules[m.i] = x
+                    if m.i == max(mods):
+                        return modules
+
+                x = m(x)  # run
+                y.append(x if m.i in self.save else None)  # save output
+                if has_returnlist and m.i in self.return_outputs:
+                    return_dict[len(return_dict)] = x
+                if visualize:
+                    feature_visualization(x, m.type, m.i, save_dir=visualize)
+                if embed and m.i in embed:
+                    embeddings.append(nn.functional.adaptive_avg_pool2d(x, (1, 1)).squeeze(-1).squeeze(-1))  # flatten
+                    if m.i == max(embed):
+                        return torch.unbind(torch.cat(embeddings, 1), dim=0)
+            return return_dict if len(return_dict) > 0 else x
+        else:
+            x = self.model(x)
+            return x     
 
     def _predict_augment(self, x):
         """Perform augmentations on input image x and return augmented inference."""
@@ -230,11 +248,12 @@ class BaseModel(nn.Module):
             (BaseModel): An updated BaseModel object.
         """
         self = super()._apply(fn)
-        m = self.model[-1]  # Detect()
-        if isinstance(m, Detect):  # includes all Detect subclasses like Segment, Pose, OBB, WorldDetect
-            m.stride = fn(m.stride)
-            m.anchors = fn(m.anchors)
-            m.strides = fn(m.strides)
+        if isinstance(self.model, nn.modules.container.Sequential):
+            m = self.model[-1]  # Detect()
+            if isinstance(m, Detect):  # includes all Detect subclasses like Segment, Pose, OBB, WorldDetect
+                m.stride = fn(m.stride)
+                m.anchors = fn(m.anchors)
+                m.strides = fn(m.strides)
         return self
 
     def load(self, weights, verbose=True):
@@ -284,9 +303,11 @@ class DetectionModel(BaseModel):
         if nc and nc != self.yaml["nc"]:
             LOGGER.info(f"Overriding model.yaml nc={self.yaml['nc']} with nc={nc}")
             self.yaml["nc"] = nc  # override YAML value
-        self.model, self.save = parse_model(deepcopy(self.yaml), ch=ch, verbose=verbose)  # model, savelist
+        self.model, self.save, return_outputs = parse_model(deepcopy(self.yaml), ch=ch, verbose=verbose)  # model, savelist
         self.names = {i: f"{i}" for i in range(self.yaml["nc"])}  # default names dict
         self.inplace = self.yaml.get("inplace", True)
+        mod_ids = list(range(len(self.model)))
+        self.return_outputs = [mod_ids[idx] for idx in return_outputs]
 
         # Build strides
         m = self.model[-1]  # Detect()
@@ -294,7 +315,9 @@ class DetectionModel(BaseModel):
             s = 256  # 2x min stride
             m.inplace = self.inplace
             forward = lambda x: self.forward(x)[0] if isinstance(m, (Segment, Pose, OBB)) else self.forward(x)
-            m.stride = torch.tensor([s / x.shape[-2] for x in forward(torch.zeros(1, ch, s, s))])  # forward
+            out = forward(torch.zeros(1, ch, s, s))
+            out = out[0] if isinstance(out, list) else out
+            m.stride = torch.tensor([s / x.shape[-2] for x in out])  # forward
             self.stride = m.stride
             m.bias_init()  # only run once
         else:
@@ -305,6 +328,13 @@ class DetectionModel(BaseModel):
         if verbose:
             self.info()
             LOGGER.info("")
+
+    def forward(self, x):
+        res = super().forward(x)
+        if isinstance(res, dict):
+            # Indicates a big model with 2 detection heads, return the first value from each head list as tuple
+            return res[0][0][0], res[1][0][0]
+        return res
 
     def _predict_augment(self, x):
         """Perform augmentations on input image x and return augmented inference and train outputs."""
@@ -407,10 +437,13 @@ class ClassificationModel(BaseModel):
             self.yaml["nc"] = nc  # override YAML value
         elif not nc and not self.yaml.get("nc", None):
             raise ValueError("nc not specified. Must specify nc in model.yaml or function arguments.")
-        self.model, self.save = parse_model(deepcopy(self.yaml), ch=ch, verbose=verbose)  # model, savelist
+        self.model, self.save, return_outputs = parse_model(deepcopy(self.yaml), ch=ch, verbose=verbose)  # model, savelist
         self.stride = torch.Tensor([1])  # no stride constraints
         self.names = {i: f"{i}" for i in range(self.yaml["nc"])}  # default names dict
         self.info()
+        mod_ids = list(range(len(self.model)))
+        self.return_outputs = [mod_ids[idx] for idx in return_outputs]
+
 
     @staticmethod
     def reshape_outputs(model, nc):
@@ -833,7 +866,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
 
     # Args
     max_channels = float("inf")
-    nc, act, scales = (d.get(x) for x in ("nc", "activation", "scales"))
+    nc, nc_1, act, scales = (d.get(x) for x in ("nc", "nc_1", "activation", "scales"))
     depth, width, kpt_shape = (d.get(x, 1.0) for x in ("depth_multiple", "width_multiple", "kpt_shape"))
     if scales:
         scale = d.get("scale")
@@ -939,7 +972,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
         if i == 0:
             ch = []
         ch.append(c2)
-    return nn.Sequential(*layers), sorted(save)
+    return nn.Sequential(*layers), sorted(set(save)), d.get("return_outputs", [])
 
 
 def yaml_model_load(path):

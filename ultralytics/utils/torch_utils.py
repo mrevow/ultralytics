@@ -71,6 +71,7 @@ def get_cpu_info():
 
     k = "brand_raw", "hardware_raw", "arch_string_raw"  # info keys sorted by preference (not all keys always available)
     info = cpuinfo.get_cpu_info()  # info dict
+    # info = { 'brand_raw': '13th Gen Intel(R) Core(TM) i7-13700',}
     string = info.get(k[0] if k[0] in info else k[1] if k[1] in info else k[2], "unknown")
     return string.replace("(R)", "").replace("CPU ", "").replace("@ ", "")
 

@@ -153,7 +153,8 @@ class v8DetectionLoss:
         device = next(model.parameters()).device  # get model device
         h = model.args  # hyperparameters
 
-        m = model.model[-1]  # Detect() module
+        # get the Detect() module
+        m = model.model[-1] if isinstance(model.model, torch.nn.modules.container.Sequential) else model.model
         self.bce = nn.BCEWithLogitsLoss(reduction="none")
         self.hyp = h
         self.stride = m.stride  # model strides

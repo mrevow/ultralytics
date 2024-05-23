@@ -65,7 +65,7 @@ class BaseValidator:
         callbacks (dict): Dictionary to store various callback functions.
     """
 
-    def __init__(self, dataloader=None, save_dir=None, pbar=None, args=None, _callbacks=None):
+    def __init__(self, dataloader=None, save_dir=None, pbar=None, args=None, _callbacks=None, _logger=None):
         """
         Initializes a BaseValidator instance.
 
@@ -76,6 +76,8 @@ class BaseValidator:
             args (SimpleNamespace): Configuration for the validator.
             _callbacks (dict): Dictionary to store various callback functions.
         """
+        global LOGGER
+        LOGGER = LOGGER if _logger is None else _logger
         self.args = get_cfg(overrides=args)
         self.dataloader = dataloader
         self.pbar = pbar
@@ -163,10 +165,11 @@ class BaseValidator:
             Profile(device=self.device),
             Profile(device=self.device),
         )
-        bar = TQDM(self.dataloader, desc=self.get_desc(), total=len(self.dataloader))
+        # bar = TQDM(self.dataloader, desc='\n', total=len(self.dataloader))
+        LOGGER.info(self.get_desc())
         self.init_metrics(de_parallel(model))
         self.jdict = []  # empty before each val
-        for batch_i, batch in enumerate(bar):
+        for batch_i, batch in enumerate(self.dataloader):
             self.run_callbacks("on_val_batch_start")
             self.batch_i = batch_i
             # Preprocess

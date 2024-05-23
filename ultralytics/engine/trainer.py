@@ -96,6 +96,8 @@ class BaseTrainer:
             cfg (str, optional): Path to a configuration file. Defaults to DEFAULT_CFG.
             overrides (dict, optional): Configuration overrides. Defaults to None.
         """
+        global LOGGER
+
         self.args = get_cfg(cfg, overrides)
         self.check_resume(overrides)
         self.device = select_device(self.args.device, self.args.batch)
@@ -127,7 +129,13 @@ class BaseTrainer:
 
         # Model and Dataset
         self.model = check_model_file_from_stem(self.args.model)  # add suffix, i.e. yolov8n -> yolov8n.pt
-        self.trainset, self.testset = self.get_dataset()
+        if overrides.get("trainset", None) is None or overrides.get("testset", None) is None:
+            self.trainset, self.testset = self.get_dataset()
+        else:
+            self.trainset = overrides["trainset"]
+            self.testset = overrides["testset"]
+            _, _ = self.get_dataset()  # Require side effect that sets self.data
+
         self.ema = None
 
         # Optimization utils init
@@ -142,6 +150,7 @@ class BaseTrainer:
         self.loss_names = ["Loss"]
         self.csv = self.save_dir / "results.csv"
         self.plot_idx = [0, 1, 2]
+        self.LOGGER = LOGGER = overrides["logger"] if overrides.get("logger", None) is not None else LOGGER
 
         # Callbacks
         self.callbacks = _callbacks or callbacks.get_default_callbacks()
@@ -265,7 +274,7 @@ class BaseTrainer:
 
         # Check imgsz
         gs = max(int(self.model.stride.max() if hasattr(self.model, "stride") else 32), 32)  # grid size (max stride)
-        self.args.imgsz = check_imgsz(self.args.imgsz, stride=gs, floor=gs, max_dim=1)
+        self.args.imgsz = check_imgsz(self.args.imgsz, stride=gs, floor=gs, max_dim=2)
         self.stride = gs  # for multiscale training
 
         # Batch size
@@ -348,7 +357,8 @@ class BaseTrainer:
 
             if RANK in {-1, 0}:
                 LOGGER.info(self.progress_string())
-                pbar = TQDM(enumerate(self.train_loader), total=nb)
+                # pbar = TQDM(enumerate(self.train_loader), total=nb)
+            pbar = enumerate(self.train_loader)
             self.tloss = None
             for i, batch in pbar:
                 self.run_callbacks("on_train_batch_start")
@@ -397,11 +407,14 @@ class BaseTrainer:
                 mem = f"{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G"  # (GB)
                 loss_len = self.tloss.shape[0] if len(self.tloss.shape) else 1
                 losses = self.tloss if loss_len > 1 else torch.unsqueeze(self.tloss, 0)
-                if RANK in {-1, 0}:
-                    pbar.set_description(
-                        ("%11s" * 2 + "%11.4g" * (2 + loss_len))
-                        % (f"{epoch + 1}/{self.epochs}", mem, *losses, batch["cls"].shape[0], batch["img"].shape[-1])
+                if RANK in {-1, 0} and i % self.args.log_frequency == 0:
+                    # pbar.set_description(
+                    LOGGER.info(
+                        ("%11s" * 2 + "%11.4g" * (1 + loss_len))
+                        # % (f"{epoch + 1}/{self.epochs}", mem, *losses, batch["cls"].shape[0], batch["img"].shape[-1])
+                        % (f"{epoch + 1}/{self.epochs}", i, *losses, batch["cls"].shape[0],)
                     )
+                    self.save_model()
                     self.run_callbacks("on_batch_end")
                     if self.args.plots and ni in self.plot_idx:
                         self.plot_training_samples(batch, ni)
@@ -482,7 +495,7 @@ class BaseTrainer:
                 "optimizer": convert_optimizer_state_dict_to_fp16(deepcopy(self.optimizer.state_dict())),
                 "train_args": vars(self.args),  # save as dict
                 "train_metrics": {**self.metrics, **{"fitness": self.fitness}},
-                "train_results": {k.strip(): v for k, v in pd.read_csv(self.csv).to_dict(orient="list").items()},
+                # "train_results": {k.strip(): v for k, v in pd.read_csv(self.csv).to_dict(orient="list").items()},
                 "date": datetime.now().isoformat(),
                 "version": __version__,
                 "license": "AGPL-3.0 (https://ultralytics.com/license)",

@@ -28,9 +28,12 @@ class DetectionValidator(BaseValidator):
         ```
     """
 
-    def __init__(self, dataloader=None, save_dir=None, pbar=None, args=None, _callbacks=None):
+    def __init__(self, dataloader=None, save_dir=None, pbar=None, args=None, _callbacks=None, _logger=None):
         """Initialize detection model with necessary variables and settings."""
-        super().__init__(dataloader, save_dir, pbar, args, _callbacks)
+        super().__init__(dataloader, save_dir, pbar, args, _callbacks, _logger)
+        global LOGGER
+        LOGGER = LOGGER if _logger is None else _logger
+
         self.nt_per_class = None
         self.is_coco = False
         self.is_lvis = False
@@ -43,23 +46,24 @@ class DetectionValidator(BaseValidator):
 
     def preprocess(self, batch):
         """Preprocesses batch of images for YOLO training."""
-        batch["img"] = batch["img"].to(self.device, non_blocking=True)
-        batch["img"] = (batch["img"].half() if self.args.half else batch["img"].float()) / 255
-        for k in ["batch_idx", "cls", "bboxes"]:
-            batch[k] = batch[k].to(self.device)
+        if isinstance(batch["img"], torch.Tensor):
+            batch["img"] = batch["img"].to(self.device, non_blocking=True)
+            batch["img"] = (batch["img"].half() if self.args.half else batch["img"].float()) / 255
+            for k in ["batch_idx", "cls", "bboxes"]:
+                batch[k] = batch[k].to(self.device)
 
-        if self.args.save_hybrid:
-            height, width = batch["img"].shape[2:]
-            nb = len(batch["img"])
-            bboxes = batch["bboxes"] * torch.tensor((width, height, width, height), device=self.device)
-            self.lb = (
-                [
-                    torch.cat([batch["cls"][batch["batch_idx"] == i], bboxes[batch["batch_idx"] == i]], dim=-1)
-                    for i in range(nb)
-                ]
-                if self.args.save_hybrid
-                else []
-            )  # for autolabelling
+            if self.args.save_hybrid:
+                height, width = batch["img"].shape[2:]
+                nb = len(batch["img"])
+                bboxes = batch["bboxes"] * torch.tensor((width, height, width, height), device=self.device)
+                self.lb = (
+                    [
+                        torch.cat([batch["cls"][batch["batch_idx"] == i], bboxes[batch["batch_idx"] == i]], dim=-1)
+                        for i in range(nb)
+                    ]
+                    if self.args.save_hybrid
+                    else []
+                )  # for autolabelling
 
         return batch
 
@@ -101,8 +105,14 @@ class DetectionValidator(BaseValidator):
         cls = batch["cls"][idx].squeeze(-1)
         bbox = batch["bboxes"][idx]
         ori_shape = batch["ori_shape"][si]
-        imgsz = batch["img"].shape[2:]
-        ratio_pad = batch["ratio_pad"][si]
+        imgsz = batch.get("resized_shape")
+        if imgsz is None:
+            imgsz = batch["img"].shape[2:]
+        else:
+            imgsz = imgsz[si]
+        ratio_pad = batch.get("ratio_pad")
+        if ratio_pad is not None:
+            ratio_pad = ratio_pad[si]
         if len(cls):
             bbox = ops.xywh2xyxy(bbox) * torch.tensor(imgsz, device=self.device)[[1, 0, 1, 0]]  # target boxes
             ops.scale_boxes(imgsz, bbox, ori_shape, ratio_pad=ratio_pad)  # native-space labels
